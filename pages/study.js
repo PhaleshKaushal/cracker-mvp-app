@@ -187,9 +187,20 @@ export default function StudyPage() {
 
   // ── Opening cards ───────────────────────────────────────────
   if (screen === 'opening_cards') {
+    // Guard: wait until cards are loaded — Vercel cold starts can be slow
+    if (!openingCards.length) {
+      return (
+        <div className="min-h-screen flex items-center justify-center">
+          <div className="text-center">
+            <div className="text-4xl mb-3 animate-pulse">📖</div>
+            <p className="text-gray-400 text-sm font-medium">Loading your session...</p>
+          </div>
+        </div>
+      );
+    }
     return (
       <OpeningCard
-        card={openingCards[cardIndex] || openingCards[0]}
+        card={openingCards[cardIndex]}
         cardIndex={cardIndex}
         totalCards={openingCards.length}
         onNext={handleCardNext}
