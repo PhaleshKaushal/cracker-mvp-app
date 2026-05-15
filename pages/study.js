@@ -118,7 +118,14 @@ export default function StudyPage() {
       .eq('passage_id', passage.id)
       .order('order_index', { ascending: true });
 
-    setQuestions(qs || []);
+    const loaded = qs || [];
+    if (loaded.length === 0) {
+      // No questions for this passage — skip straight to complete screen
+      console.warn('[Cracker] No questions found for passage', passage.id);
+      setScreen('passage_complete');
+      return;
+    }
+    setQuestions(loaded);
     setAnswers([]);
     setQuestionIndex(0);
     setLastResult(null);

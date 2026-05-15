@@ -38,7 +38,7 @@ export default function KaraokeReader({ passage, onComplete }) {
               className="w-full flex items-center justify-center gap-3 bg-pink-500 hover:bg-pink-600 active:bg-pink-700 text-white font-bold text-base px-6 py-4 rounded-2xl transition-colors shadow-sm"
             >
               <span className="text-xl">🎤</span>
-              <span>Start to retain — speak every word aloud</span>
+              <span>Start to retain: speak every word aloud</span>
             </button>
           ) : (
             <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
