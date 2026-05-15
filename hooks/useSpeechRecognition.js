@@ -2,15 +2,15 @@ import { useRef, useCallback } from 'react';
 
 /**
  * Web Speech API wrapper.
- * Creates a FRESH SpeechRecognition object on every start/restart —
- * reusing the same object after .stop() is unreliable in Chrome.
+ * - Creates a fresh SpeechRecognition object on every (re)start — reusing is unreliable
+ * - Passes isFinal flag so the engine can distinguish utterance boundaries
+ * - Ignores no-speech and aborted errors (normal Chrome behaviour)
  */
 export default function useSpeechRecognition({ onResult, onStateChange }) {
-  const activeRef  = useRef(false);
+  const activeRef        = useRef(false);
   const onResultRef      = useRef(onResult);
   const onStateChangeRef = useRef(onStateChange);
 
-  // Keep refs current so restarts always use the latest callbacks
   onResultRef.current      = onResult;
   onStateChangeRef.current = onStateChange;
 
@@ -26,31 +26,24 @@ export default function useSpeechRecognition({ onResult, onStateChange }) {
     rec.lang            = 'en-IN';
     rec.maxAlternatives = 1;
 
-    rec.onstart = () => {
-      onStateChangeRef.current?.('listening');
-    };
+    rec.onstart = () => onStateChangeRef.current?.('listening');
 
     rec.onresult = (event) => {
-      let transcript = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        transcript += event.results[i][0].transcript;
-      }
-      if (transcript.trim()) {
-        onResultRef.current?.(transcript.trim().toLowerCase());
+        const transcript = event.results[i][0].transcript.trim().toLowerCase();
+        const isFinal    = event.results[i].isFinal;
+        if (transcript) onResultRef.current?.(transcript, isFinal);
       }
     };
 
-    rec.onerror = (event) => {
-      if (event.error === 'no-speech') return; // normal pause — ignore
-      if (event.error === 'aborted')   return; // we called stop() — ignore
-      // For other errors, restart
+    rec.onerror = (e) => {
+      if (e.error === 'no-speech' || e.error === 'aborted') return;
       onStateChangeRef.current?.('restarting');
       setTimeout(createAndStart, 300);
     };
 
     rec.onend = () => {
       if (activeRef.current) {
-        // Session ended naturally — restart immediately with a fresh object
         onStateChangeRef.current?.('restarting');
         setTimeout(createAndStart, 150);
       } else {
@@ -58,23 +51,17 @@ export default function useSpeechRecognition({ onResult, onStateChange }) {
       }
     };
 
-    try {
-      rec.start();
-    } catch (e) {
-      // Already started or other error — retry shortly
-      setTimeout(createAndStart, 400);
-    }
+    try { rec.start(); } catch (_) { setTimeout(createAndStart, 400); }
   }
 
   const start = useCallback(() => {
     if (typeof window === 'undefined') return;
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      onStateChange?.('unsupported');
-      return;
+      onStateChange?.('unsupported'); return;
     }
     activeRef.current = true;
     createAndStart();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line
 
   const stop = useCallback(() => {
     activeRef.current = false;

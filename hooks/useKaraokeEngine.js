@@ -3,20 +3,26 @@ import useSpeechRecognition from './useSpeechRecognition';
 import { KARAOKE_WINDOW_MS, IDLE_TIMEOUT_MS } from '../lib/constants';
 
 /**
- * Karaoke engine — simplified, bulletproof approach:
+ * Karaoke engine — correct utterance-based matching.
  *
- * 1. Speech recognition matches words in the next LOOKAHEAD positions → fast advance
- * 2. Rolling window: if stuck on same word for 5s → auto-advance 1 word
- *    (handles UPSC terms, cycling mic, anything Chrome can't recognise)
- * 3. Idle: if stuck on same word for 30s → onIdle() fires
+ * Chrome Speech API sends results per utterance:
+ *   interim: "fundamental rights"        (partial, may change)
+ *   interim: "fundamental rights are"    (growing)
+ *   final:   "fundamental rights are"    (locked in, next utterance starts fresh)
  *
- * The rolling window is unconditional once reading starts — no dependency on
- * whether a transcript was received. This makes the karaoke always progress.
+ * Strategy:
+ * - Each utterance has a sessionStart (passage index when that utterance began)
+ * - For each interim/final, match all its words in sequence from sessionStart
+ * - Advance currentIndex to the furthest matched position seen so far
+ * - On final → sessionStart = currentIndex (ready for next utterance)
+ *
+ * No string diffing. No hacks. Speech recognition moves fast when it works.
+ * Rolling window (1.2s) only handles genuinely unrecognised words (e.g. Kesavananda).
  */
 
-const LOOKAHEAD   = 5;    // proximity window for speech matching
-const MAX_JUMP    = 3;    // max words per transcript event
-const WINDOW_TICK = 500;  // check interval (ms)
+const LOOKAHEAD  = 6;   // words ahead to search within for a match
+const MAX_JUMP   = 5;   // cap per utterance to prevent runaway jumps
+const TICK_MS    = 300; // rolling window check interval
 
 function normalise(w) {
   return w.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
@@ -28,89 +34,98 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [micState,     setMicState]     = useState('idle');
 
-  const currentIndexRef  = useRef(0);
-  const lastAdvanceRef   = useRef(Date.now());
-  const prevTranscriptRef = useRef('');
-  const windowTimerRef   = useRef(null);
-  const idleTimerRef     = useRef(null);
-  const wordsRef         = useRef(words);
-  const completedRef     = useRef(false);
-  const runningRef       = useRef(false); // true while reading is active
+  const currentIndexRef   = useRef(0);
+  const lastAdvanceRef    = useRef(Date.now());
+  const sessionStartRef   = useRef(0);   // passage index when current utterance started
+  const windowTimerRef    = useRef(null);
+  const idleTimerRef      = useRef(null);
+  const wordsRef          = useRef(words);
+  const completedRef      = useRef(false);
+  const runningRef        = useRef(false);
 
   useEffect(() => {
-    wordsRef.current  = passage ? passage.split(/\s+/).filter(Boolean) : [];
+    wordsRef.current     = passage ? passage.split(/\s+/).filter(Boolean) : [];
     completedRef.current = false;
   }, [passage]);
 
-  const advanceBy = useCallback((n = 1) => {
-    lastAdvanceRef.current = Date.now();
-    setCurrentIndex(prev => {
-      const next = Math.min(prev + n, wordsRef.current.length);
-      currentIndexRef.current = next;
-      if (next >= wordsRef.current.length && !completedRef.current) {
-        completedRef.current = true;
-        onComplete?.();
-      }
-      return next;
-    });
+  // Move to an absolute index (not relative)
+  const advanceTo = useCallback((targetIndex) => {
+    const next = Math.min(targetIndex, wordsRef.current.length);
+    if (next <= currentIndexRef.current) return;
+    lastAdvanceRef.current  = Date.now();
+    currentIndexRef.current = next;
+    setCurrentIndex(next);
+    if (next >= wordsRef.current.length && !completedRef.current) {
+      completedRef.current = true;
+      onComplete?.();
+    }
   }, [onComplete]);
 
-  // ── Speech transcript handler ────────────────────────────────
-  const handleTranscript = useCallback((transcript) => {
-    const prev = prevTranscriptRef.current;
+  const advanceBy = useCallback((n) => {
+    advanceTo(currentIndexRef.current + n);
+  }, [advanceTo]);
 
-    // Only process new words (Chrome sends cumulative interim results)
-    let text;
-    if (transcript === prev) return;
-    else if (prev && transcript.startsWith(prev)) text = transcript.slice(prev.length).trim();
-    else text = transcript;
-    prevTranscriptRef.current = transcript;
+  // ── Transcript handler ─────────────────────────────────────
+  const handleTranscript = useCallback((transcript, isFinal) => {
+    const spoken     = transcript.split(/\s+/).map(normalise).filter(Boolean);
+    const total      = wordsRef.current.length;
+    const startPos   = sessionStartRef.current;
 
-    if (!text) return;
+    // Walk through spoken words, matching them in sequence from sessionStart
+    let pos          = startPos;
+    let furthest     = currentIndexRef.current;
+    let jumped       = 0;
 
-    const spokenWords = text.split(/\s+/).map(normalise).filter(Boolean);
-    let advanced = 0;
-
-    for (const spoken of spokenWords) {
-      if (!spoken || advanced >= MAX_JUMP) break;
-      const cur = currentIndexRef.current;
-      const end = Math.min(cur + LOOKAHEAD, wordsRef.current.length);
-      for (let i = cur; i < end; i++) {
+    for (const word of spoken) {
+      if (!word || jumped >= MAX_JUMP) break;
+      const end = Math.min(pos + LOOKAHEAD, total);
+      for (let i = pos; i < end; i++) {
         const target = normalise(wordsRef.current[i]);
-        if (target && spoken === target) {
-          const jump = i - cur + 1;
-          advanceBy(jump);
-          advanced += jump;
+        if (target && target === word) {
+          const newPos = i + 1;
+          if (newPos > furthest) {
+            furthest = newPos;
+            jumped   = newPos - currentIndexRef.current;
+          }
+          pos = newPos;
           break;
         }
       }
     }
-  }, [advanceBy]);
 
-  // ── Rolling window + idle timers ─────────────────────────────
+    // Advance to the furthest match found in this utterance
+    if (furthest > currentIndexRef.current) {
+      advanceTo(furthest);
+    }
+
+    // On final result: this utterance is done — next one starts from here
+    if (isFinal) {
+      sessionStartRef.current = currentIndexRef.current;
+    }
+  }, [advanceTo]);
+
+  // ── Timers ────────────────────────────────────────────────
   function startTimers() {
     clearInterval(windowTimerRef.current);
     clearInterval(idleTimerRef.current);
 
-    // Rolling window: advance words proportional to how long we've been stuck.
-    // E.g. stuck 1.2s → advance 1, stuck 2.4s → advance 2, capped at 3.
-    // Unconditional — once reading starts, always progress.
+    // Rolling window: if stuck on same word for KARAOKE_WINDOW_MS → nudge 1 word
+    // This only fires for truly unrecognisable words — speech recognition handles the rest
     windowTimerRef.current = setInterval(() => {
       if (!runningRef.current) return;
       const stuck = Date.now() - lastAdvanceRef.current;
       if (stuck >= KARAOKE_WINDOW_MS) {
-        const n = Math.min(Math.floor(stuck / KARAOKE_WINDOW_MS), 3);
-        advanceBy(n);
+        advanceBy(1);
+        // Also move session start forward so next utterance matches correctly
+        sessionStartRef.current = currentIndexRef.current;
       }
-    }, WINDOW_TICK);
+    }, TICK_MS);
 
-    // Idle: stuck for IDLE_TIMEOUT_MS → show motivational screen
+    // Idle: no progress for 30s → motivational screen
     idleTimerRef.current = setInterval(() => {
       if (!runningRef.current) return;
       const stuck = Date.now() - lastAdvanceRef.current;
-      if (stuck >= IDLE_TIMEOUT_MS) {
-        onIdle?.();
-      }
+      if (stuck >= IDLE_TIMEOUT_MS) onIdle?.();
     }, 5000);
   }
 
@@ -122,10 +137,10 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   function start() {
     runningRef.current      = true;
     lastAdvanceRef.current  = Date.now();
-    prevTranscriptRef.current = '';
+    sessionStartRef.current = 0;
     currentIndexRef.current = 0;
-    setCurrentIndex(0);
     completedRef.current    = false;
+    setCurrentIndex(0);
     startMic();
     startTimers();
   }
@@ -141,7 +156,7 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   function resume() {
     runningRef.current      = true;
     lastAdvanceRef.current  = Date.now();
-    prevTranscriptRef.current = '';
+    sessionStartRef.current = currentIndexRef.current;
     startMic();
     startTimers();
   }
