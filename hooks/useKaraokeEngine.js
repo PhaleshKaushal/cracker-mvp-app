@@ -17,8 +17,9 @@ import { KARAOKE_WINDOW_MS, IDLE_TIMEOUT_MS } from '../lib/constants';
  * - 30-second idle (no transcript) → onIdle().
  */
 
-const LOOKAHEAD   = 7;   // look at next 7 words — handles fast speakers skipping a word
-const WINDOW_TICK = 500; // rolling-window check interval (ms)
+const LOOKAHEAD      = 5;  // proximity window — only match within next 5 words
+const MAX_JUMP       = 3;  // max words to advance in a single transcript event (prevents wild jumps)
+const WINDOW_TICK    = 500; // rolling-window check interval (ms)
 
 export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   const words = passage ? passage.split(/\s+/).filter(Boolean) : [];
@@ -89,16 +90,20 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
     const end         = Math.min(start + LOOKAHEAD, totalWords);
 
     // Match each new spoken word against the next LOOKAHEAD passage words.
-    // Process all matches in sequence (handles fast bursts of words correctly).
+    // Cap total advance per event at MAX_JUMP to prevent wild jumps from
+    // Chrome hallucinating words that appear further ahead in the passage.
+    let advancedThisEvent = 0;
     for (const spoken of spokenWords) {
-      if (!spoken) continue;
-      const cur = currentIndexRef.current; // re-read after each advance
+      if (!spoken || advancedThisEvent >= MAX_JUMP) break;
+      const cur = currentIndexRef.current;
       const win = Math.min(cur + LOOKAHEAD, totalWords);
       for (let i = cur; i < win; i++) {
         const target = normalise(wordsRef.current[i]);
         if (target && spoken === target) {
-          advanceBy(i - cur + 1);
-          break; // move on to next spoken word
+          const jump = i - cur + 1;
+          advanceBy(jump);
+          advancedThisEvent += jump;
+          break;
         }
       }
     }

@@ -3,124 +3,94 @@ import { motion, AnimatePresence } from 'framer-motion';
 import useKaraokeEngine from '../../hooks/useKaraokeEngine';
 import Button from '../ui/Button';
 
-const MIC_STATE_LABEL = {
-  idle:        '',
-  listening:   'Listening...',
-  restarting:  'Reconnecting...',
-  unsupported: '',
-  error:       '',
-};
-
 export default function KaraokeReader({ passage, onComplete }) {
-  const [showIdle, setShowIdle]   = useState(false);
-  const [started, setStarted]     = useState(false);
-  const [mounted, setMounted]     = useState(false);
-  const containerRef              = useRef(null);
-  const activeWordRef             = useRef(null);
+  const [showIdle, setShowIdle] = useState(false);
+  const [started,  setStarted]  = useState(false);
+  const [mounted,  setMounted]  = useState(false);
+  const containerRef            = useRef(null);
+  const activeWordRef           = useRef(null);
 
-  // Only check speech support after hydration — window doesn't exist on server
   useEffect(() => { setMounted(true); }, []);
 
   const { words, currentIndex, micState, isSupported, start, stop, resume } =
-    useKaraokeEngine({
-      passage,
-      onComplete,
-      onIdle: () => setShowIdle(true),
-    });
+    useKaraokeEngine({ passage, onComplete, onIdle: () => setShowIdle(true) });
 
-  // Scroll active word to the centre of the container — no page scroll
+  // Scroll active word to centre of the box — container only, never the page
   useEffect(() => {
     if (!activeWordRef.current || !containerRef.current) return;
-    const container = containerRef.current;
-    const word      = activeWordRef.current;
-    const target    = word.offsetTop - container.clientHeight / 2 + word.offsetHeight / 2;
-    container.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+    const c = containerRef.current;
+    const w = activeWordRef.current;
+    c.scrollTo({ top: Math.max(0, w.offsetTop - c.clientHeight / 2 + w.offsetHeight / 2), behavior: 'smooth' });
   }, [currentIndex]);
 
-  function handleStart() {
-    setStarted(true);
-    start();
-  }
-
-  const progressPct = words.length > 0
-    ? Math.round((currentIndex / words.length) * 100)
-    : 0;
-
+  const progressPct = words.length > 0 ? Math.round((currentIndex / words.length) * 100) : 0;
   const isListening = micState === 'listening';
 
   return (
     <div className="relative">
 
-      {/* ── Progress bar ── */}
+      {/* Progress bar */}
       <div className="flex items-center gap-3 mb-5">
-        <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+        <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
           <motion.div
             className="h-full bg-gradient-to-r from-pink-400 to-blue-400 rounded-full"
             animate={{ width: `${progressPct}%` }}
             transition={{ duration: 0.4 }}
           />
         </div>
-        <span className="text-xs font-semibold text-gray-400 tabular-nums w-10 text-right">
-          {progressPct}%
+        <span className="text-xs font-medium text-gray-400 tabular-nums">
+          {currentIndex}/{words.length}
         </span>
       </div>
 
-      {/* ── Mic status pill ── */}
+      {/* Mic pill */}
       {started && (
         <div className="flex items-center gap-2 mb-4">
-          <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full transition-colors ${
-            isListening
-              ? 'bg-pink-100 text-pink-600'
-              : 'bg-gray-100 text-gray-400'
+          <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full transition-colors ${
+            isListening ? 'bg-pink-50 text-pink-500' : 'bg-gray-100 text-gray-400'
           }`}>
             {isListening && (
-              <span className="relative flex h-2 w-2">
+              <span className="relative flex h-1.5 w-1.5">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-pink-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-pink-500" />
+                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-pink-500" />
               </span>
             )}
-            {MIC_STATE_LABEL[micState] || 'Mic idle'}
-          </span>
-          <span className="text-xs text-gray-400">
-            {currentIndex} / {words.length} words
+            {isListening ? 'Listening' : micState === 'restarting' ? 'Reconnecting…' : 'Mic idle'}
           </span>
         </div>
       )}
 
-      {/* ── Passage box ── */}
+      {/* ── Passage / lyrics box ── */}
       <div
         ref={containerRef}
         className="bg-white border border-gray-100 rounded-2xl shadow-sm overflow-y-auto overflow-x-hidden"
         style={{ height: '400px' }}
       >
-        <div className="p-7" style={{ fontFamily: 'Georgia, serif' }}>
-          <p className="text-xl leading-[2.4] break-words">
+        <div className="px-8 py-8" style={{ fontFamily: 'Georgia, serif' }}>
+          <p className="text-xl leading-[2.6] break-words">
             {words.map((word, i) => {
               const isActive = i === currentIndex;
               const isSpoken = i < currentIndex;
+
+              // YT-lyrics style: spoken = medium grey, active = near-black bold (slightly bigger),
+              // upcoming = light grey. Clean contrast — no backgrounds, no glow.
+              let style = {};
+              let className = 'transition-all duration-150';
+
+              if (isActive) {
+                style = { color: '#111827', fontWeight: 700, fontSize: '1.06em' };
+              } else if (isSpoken) {
+                style = { color: '#6B7280' }; // gray-500 — clearly read
+              } else {
+                style = { color: '#C4C9D4' }; // light grey — clearly upcoming
+              }
 
               return (
                 <span
                   key={i}
                   ref={isActive ? activeWordRef : null}
-                  className={[
-                    'inline transition-all duration-100',
-                    isSpoken
-                      ? 'text-gray-700'
-                      : !isActive
-                      ? 'text-gray-300'
-                      : '',
-                  ].join(' ')}
-                  style={isActive ? {
-                    color: '#be185d',
-                    fontWeight: 700,
-                    fontSize: '1.18em',
-                    background: 'linear-gradient(135deg, #fdf2f8, #eff6ff)',
-                    borderRadius: '5px',
-                    padding: '1px 5px',
-                    boxShadow: '0 0 0 2px #f9a8d4',
-                    marginRight: '6px',
-                  } : { marginRight: '6px' }}
+                  className={className}
+                  style={{ ...style, marginRight: '7px', display: 'inline' }}
                 >
                   {word}
                 </span>
@@ -130,27 +100,27 @@ export default function KaraokeReader({ passage, onComplete }) {
         </div>
       </div>
 
-      {/* ── Start / not started ── */}
+      {/* Start button */}
       {!started && mounted && (
         <div className="mt-6 text-center">
           {isSupported() ? (
             <>
-              <Button onClick={handleStart} size="lg">
+              <Button onClick={() => { setStarted(true); start(); }} size="lg">
                 🎤 Start reading aloud
               </Button>
               <p className="text-xs text-gray-400 mt-2">
-                Chrome will ask for mic permission · Works best in Chrome
+                Chrome will ask for mic permission
               </p>
             </>
           ) : (
             <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
-              <strong>Open this page in Chrome</strong> — Web Speech API only works there.
+              <strong>Open in Chrome</strong> — Web Speech API only works in Chrome.
             </div>
           )}
         </div>
       )}
 
-      {/* ── Idle / motivational overlay ── */}
+      {/* Idle overlay */}
       <AnimatePresence>
         {showIdle && (
           <motion.div
@@ -165,19 +135,13 @@ export default function KaraokeReader({ passage, onComplete }) {
               <h3 className="text-2xl font-black text-gray-900 mb-2">
                 आगे पढ़ना है, या break लेना है?
               </h3>
-              <p className="text-pink-500 font-bold mb-1">
-                5 minute aur padhlo phir break lelena!
-              </p>
-              <p className="text-gray-400 text-sm mb-7 leading-relaxed">
+              <p className="text-pink-500 font-bold mb-1">5 minute aur padhlo phir break lelena!</p>
+              <p className="text-gray-400 text-sm mb-7">
                 Based on how you are doing this, we have a feeling — you can do this!
               </p>
               <div className="flex gap-3 justify-center">
-                <Button onClick={() => { setShowIdle(false); resume(); }} size="lg">
-                  Continue Reading
-                </Button>
-                <Button onClick={() => { setShowIdle(false); stop(); }} variant="outline" size="lg">
-                  Take a Break
-                </Button>
+                <Button onClick={() => { setShowIdle(false); resume(); }} size="lg">Continue Reading</Button>
+                <Button onClick={() => { setShowIdle(false); stop(); }} variant="outline" size="lg">Take a Break</Button>
               </div>
             </div>
           </motion.div>
