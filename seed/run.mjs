@@ -6,10 +6,16 @@
 import { createClient } from '@supabase/supabase-js';
 import { openingCards, passages, questions } from './data.js';
 
-const supabase = createClient(
-  'https://gxcdnydddboeovjqhcvb.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd4Y2RueWRkZGJvZW92anFoY3ZiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3ODgyMDk5NywiZXhwIjoyMDk0Mzk2OTk3fQ.byf8cbbMfXRa7fmbMnRtPMW8ME62aqrHaVnDBSCQTNw'
-);
+// Keys loaded from .env.local — never hardcode secrets in source files
+const supabaseUrl         = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseServiceRole = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!supabaseUrl || !supabaseServiceRole) {
+  console.error('Missing env vars. Add to .env.local:\n  NEXT_PUBLIC_SUPABASE_URL\n  SUPABASE_SERVICE_ROLE_KEY');
+  process.exit(1);
+}
+
+const supabase = createClient(supabaseUrl, supabaseServiceRole);
 
 async function seed() {
   console.log('🌱 Starting seed...\n');
