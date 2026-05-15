@@ -92,13 +92,15 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
     clearInterval(windowTimerRef.current);
     clearInterval(idleTimerRef.current);
 
-    // Rolling window: advance 1 word if stuck for KARAOKE_WINDOW_MS
-    // Unconditional — once reading starts, always progress
+    // Rolling window: advance words proportional to how long we've been stuck.
+    // E.g. stuck 1.2s → advance 1, stuck 2.4s → advance 2, capped at 3.
+    // Unconditional — once reading starts, always progress.
     windowTimerRef.current = setInterval(() => {
       if (!runningRef.current) return;
       const stuck = Date.now() - lastAdvanceRef.current;
       if (stuck >= KARAOKE_WINDOW_MS) {
-        advanceBy(1);
+        const n = Math.min(Math.floor(stuck / KARAOKE_WINDOW_MS), 3);
+        advanceBy(n);
       }
     }, WINDOW_TICK);
 
