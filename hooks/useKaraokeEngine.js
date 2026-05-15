@@ -20,26 +20,31 @@ import { IDLE_TIMEOUT_MS } from '../lib/constants';
  * 4. Idle timer: 30s with no real word match → motivational screen.
  */
 
-const LOOKAHEAD     = 3;   // look this many words ahead for a match
-const MAX_JUMP      = 4;   // max words to advance per utterance
+const LOOKAHEAD     = 6;   // look this many words ahead for a match
+                           // 6 lets us skip up to 5 unrecognised UPSC terms in a row
+const MAX_JUMP      = 10;  // max words to advance per utterance (generous — noise
+                           // filtering via MIN_WORD_LEN prevents false runaway)
 const MIN_WORD_LEN  = 4;   // ignore words shorter than this (stop words / noise)
 
-// Number word ↔ digit bridge — Chrome often transcribes "Three" as "3"
-// and passage text may have written-out numbers or digits
+// Number word ↔ digit bridge — Chrome often transcribes "Three" as "3".
+// Keys are already normalised (lowercase, no hyphens) to match normalise() output.
 const WORD_TO_NUM = {
   zero:'0', one:'1', two:'2', three:'3', four:'4', five:'5',
   six:'6', seven:'7', eight:'8', nine:'9', ten:'10',
   eleven:'11', twelve:'12', thirteen:'13', fourteen:'14', fifteen:'15',
   sixteen:'16', seventeen:'17', eighteen:'18', nineteen:'19', twenty:'20',
-  'twenty-one':'21', 'twenty-two':'22', 'twenty-three':'23', 'twenty-four':'24',
-  'twenty-five':'25', thirty:'30', 'thirty-one':'31', 'thirty-two':'32',
-  'thirty-three':'33', 'thirty-four':'34', 'thirty-five':'35', forty:'40',
-  fifty:'50', sixty:'60', seventy:'70', eighty:'80', ninety:'90',
-  hundred:'100', thousand:'1000',
+  twentyone:'21', twentytwo:'22', twentythree:'23', twentyfour:'24',
+  twentyfive:'25', thirty:'30', thirtyone:'31', thirtytwo:'32',
+  thirtythree:'33', thirtyfour:'34', thirtyfive:'35', forty:'40',
+  fortyfive:'45', fifty:'50', sixty:'60', seventy:'70', eighty:'80',
+  ninety:'90', hundred:'100', thousand:'1000',
 };
 const NUM_TO_WORD = Object.fromEntries(
   Object.entries(WORD_TO_NUM).map(([w, d]) => [d, w])
 );
+
+// True if w is a pure integer string like "3", "12", "35"
+const isNumber = (w) => /^\d+$/.test(w);
 
 function normalise(w) {
   return w.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
@@ -48,10 +53,8 @@ function normalise(w) {
 /** True if spoken word matches target word, allowing number word ↔ digit swap */
 function wordMatches(spoken, target) {
   if (spoken === target) return true;
-  // spoken = "3", target = "three"
-  if (NUM_TO_WORD[spoken] === target) return true;
-  // spoken = "three", target = "3"
-  if (WORD_TO_NUM[spoken] === target) return true;
+  if (NUM_TO_WORD[spoken] === target) return true;  // "3" → "three"
+  if (WORD_TO_NUM[spoken] === target) return true;  // "three" → "3"
   return false;
 }
 
@@ -89,10 +92,9 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   const handleTranscript = useCallback((transcript, isFinal) => {
     const total = wordsRef.current.length;
 
-    // Only use content words — filter out short words that cause false matches.
-    // Exception: keep pure digits (e.g. "3", "12", "35") since Chrome often
-    // transcribes written-out numbers like "Three" as the digit "3".
-    const isNumber = (w) => /^\d+$/.test(w);
+    // Only use content words — filter short stop words that cause false matches.
+    // Exception: keep pure digit tokens ("3","12","35") — Chrome often transcribes
+    // written-out numbers like "Three" as the digit "3".
     const spoken = transcript
       .split(/\s+/)
       .map(normalise)
