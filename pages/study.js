@@ -44,22 +44,34 @@ export default function StudyPage() {
   // ── Load opening cards + passages ───────────────────────────
   useEffect(() => {
     async function load() {
-      const { data: cards } = await supabase.from('opening_cards').select('*').limit(20);
-      if (cards?.length) {
-        const shuffled = [...cards].sort(() => Math.random() - 0.5);
-        setOpeningCards(shuffled.slice(0, OPENING_CARDS_PER_SESSION));
-      }
+      try {
+        const { data: cards, error: cardErr } = await supabase
+          .from('opening_cards').select('*').limit(20);
 
-      const { data: passageData } = await supabase
-        .from('passages')
-        .select('*')
-        .order('order_index', { ascending: true });
+        if (cardErr) console.error('[Cracker] opening_cards fetch error:', cardErr.message);
 
-      if (passageData) {
-        setPassages(passageData);
-        setCurrentPassage(passageData[0]);
+        if (cards?.length) {
+          const shuffled = [...cards].sort(() => Math.random() - 0.5);
+          setOpeningCards(shuffled.slice(0, OPENING_CARDS_PER_SESSION));
+        }
+
+        const { data: passageData, error: passErr } = await supabase
+          .from('passages')
+          .select('*')
+          .order('order_index', { ascending: true });
+
+        if (passErr) console.error('[Cracker] passages fetch error:', passErr.message);
+
+        if (passageData?.length) {
+          setPassages(passageData);
+          setCurrentPassage(passageData[0]);
+        }
+      } catch (e) {
+        console.error('[Cracker] load() threw:', e.message);
+      } finally {
+        // Always unblock the UI — even on error
+        setScreen('opening_cards');
       }
-      setScreen('opening_cards');
     }
     load();
   }, []);
@@ -187,13 +199,20 @@ export default function StudyPage() {
 
   // ── Opening cards ───────────────────────────────────────────
   if (screen === 'opening_cards') {
-    // Guard: wait until cards are loaded — Vercel cold starts can be slow
+    // Guard: cards didn't load (Supabase error or empty DB)
     if (!openingCards.length) {
       return (
-        <div className="min-h-screen flex items-center justify-center">
-          <div className="text-center">
-            <div className="text-4xl mb-3 animate-pulse">📖</div>
-            <p className="text-gray-400 text-sm font-medium">Loading your session...</p>
+        <div className="min-h-screen flex items-center justify-center px-6">
+          <div className="text-center max-w-sm">
+            <div className="text-4xl mb-3">😕</div>
+            <p className="text-gray-700 font-semibold mb-2">Couldn't load session data</p>
+            <p className="text-gray-400 text-sm mb-5">There might be a connection issue. Open browser console (F12) for details.</p>
+            <button
+              onClick={() => window.location.reload()}
+              className="bg-pink-400 text-white font-bold px-6 py-2.5 rounded-xl text-sm hover:bg-pink-500 transition-colors"
+            >
+              Try again
+            </button>
           </div>
         </div>
       );
