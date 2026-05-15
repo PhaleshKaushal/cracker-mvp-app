@@ -36,7 +36,7 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
 
   const currentIndexRef   = useRef(0);
   const lastAdvanceRef    = useRef(Date.now());
-  const lastSpeechRef     = useRef(0);   // timestamp of last actual transcript from Chrome
+  const lastMatchRef      = useRef(0);   // timestamp of last WORD MATCH (not just any transcript)
   const sessionStartRef   = useRef(0);   // passage index when current utterance started
   const windowTimerRef    = useRef(null);
   const idleTimerRef      = useRef(null);
@@ -68,7 +68,6 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
 
   // ── Transcript handler ─────────────────────────────────────
   const handleTranscript = useCallback((transcript, isFinal) => {
-    lastSpeechRef.current = Date.now(); // Chrome heard something — user is speaking
     const spoken     = transcript.split(/\s+/).map(normalise).filter(Boolean);
     const total      = wordsRef.current.length;
     const startPos   = sessionStartRef.current;
@@ -98,6 +97,7 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
 
     // Advance to the furthest match found in this utterance
     if (furthest > currentIndexRef.current) {
+      lastMatchRef.current = Date.now(); // a real word matched — user is reading
       advanceTo(furthest);
     }
 
@@ -117,22 +117,24 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
     // If user looks away → no speech → lastSpeechRef goes stale → timer does nothing.
     windowTimerRef.current = setInterval(() => {
       if (!runningRef.current) return;
-      const now          = Date.now();
-      const stuck        = now - lastAdvanceRef.current;
-      const silenceMs    = now - lastSpeechRef.current;
-      const userSpeaking = lastSpeechRef.current > 0 && silenceMs < 4000;
+      const now            = Date.now();
+      const stuck          = now - lastAdvanceRef.current;
+      const sinceLastMatch = now - lastMatchRef.current;
+      // Only auto-advance if a word actually matched within the last 5s
+      // (proves user is actively reading the passage, not just background noise)
+      const userReading = lastMatchRef.current > 0 && sinceLastMatch < 5000;
 
-      if (stuck >= KARAOKE_WINDOW_MS && userSpeaking) {
+      if (stuck >= KARAOKE_WINDOW_MS && userReading) {
         advanceBy(1);
         sessionStartRef.current = currentIndexRef.current;
       }
     }, TICK_MS);
 
-    // Idle: no speech at all for 30s → motivational screen
+    // Idle: no word match for 30s → motivational screen
     idleTimerRef.current = setInterval(() => {
-      if (!runningRef.current || lastSpeechRef.current === 0) return;
-      const silenceMs = Date.now() - lastSpeechRef.current;
-      if (silenceMs >= IDLE_TIMEOUT_MS) onIdle?.();
+      if (!runningRef.current || lastMatchRef.current === 0) return;
+      const sinceLastMatch = Date.now() - lastMatchRef.current;
+      if (sinceLastMatch >= IDLE_TIMEOUT_MS) onIdle?.();
     }, 5000);
   }
 
@@ -144,7 +146,7 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   function start() {
     runningRef.current      = true;
     lastAdvanceRef.current  = Date.now();
-    lastSpeechRef.current   = 0;
+    lastMatchRef.current    = 0;
     sessionStartRef.current = 0;
     currentIndexRef.current = 0;
     completedRef.current    = false;
@@ -164,7 +166,7 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   function resume() {
     runningRef.current      = true;
     lastAdvanceRef.current  = Date.now();
-    lastSpeechRef.current   = 0;
+    lastMatchRef.current    = 0;
     sessionStartRef.current = currentIndexRef.current;
     startMic();
     startTimers();
