@@ -247,12 +247,12 @@ export default function StudyPage() {
 
           <KaraokeReader passage={currentPassage.content} onComplete={handleReadingComplete} />
 
-          <div className="mt-5 text-center">
+          <div className="mt-5 flex justify-center">
             <button
               onClick={handleReadingComplete}
-              className="text-xs text-gray-300 hover:text-gray-500 underline underline-offset-2 transition-colors"
+              className="text-sm font-medium text-gray-400 hover:text-gray-700 border border-gray-200 hover:border-gray-400 px-5 py-2 rounded-xl transition-colors"
             >
-              Skip to questions
+              Skip to questions →
             </button>
           </div>
         </div>

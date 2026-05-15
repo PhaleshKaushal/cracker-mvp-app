@@ -29,8 +29,27 @@ export default function KaraokeReader({ passage, onComplete }) {
   return (
     <div className="relative">
 
+      {/* ── Start CTA — shown above the passage before starting ── */}
+      {!started && mounted && (
+        <div className="mb-5">
+          {isSupported() ? (
+            <button
+              onClick={() => { setStarted(true); start(); }}
+              className="w-full flex items-center justify-center gap-3 bg-pink-500 hover:bg-pink-600 active:bg-pink-700 text-white font-bold text-base px-6 py-4 rounded-2xl transition-colors shadow-sm"
+            >
+              <span className="text-xl">🎤</span>
+              <span>Start to retain — speak every word aloud</span>
+            </button>
+          ) : (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+              <strong>Open in Chrome</strong> — Web Speech API only works in Chrome.
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Progress bar */}
-      <div className="flex items-center gap-3 mb-5">
+      <div className="flex items-center gap-3 mb-4">
         <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
           <motion.div
             className="h-full bg-gradient-to-r from-pink-400 to-blue-400 rounded-full"
@@ -43,7 +62,7 @@ export default function KaraokeReader({ passage, onComplete }) {
         </span>
       </div>
 
-      {/* Mic pill */}
+      {/* Mic pill — only after starting */}
       {started && (
         <div className="flex items-center gap-2 mb-4">
           <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full bg-pink-50 text-pink-500">
@@ -60,33 +79,35 @@ export default function KaraokeReader({ passage, onComplete }) {
       <div
         ref={containerRef}
         className="bg-white border border-gray-100 rounded-2xl shadow-sm overflow-y-auto overflow-x-hidden"
-        style={{ height: '400px' }}
+        style={{ height: '380px' }}
       >
         <div className="px-8 py-8" style={{ fontFamily: 'Georgia, serif' }}>
-          <p className="text-xl leading-[2.6] break-words">
+          {/* NO break-words on the <p> — word-level inline-block handles wrapping cleanly */}
+          <p className="text-xl leading-[2.8]" style={{ wordBreak: 'normal', overflowWrap: 'normal' }}>
             {words.map((word, i) => {
               const isActive = i === currentIndex;
               const isSpoken = i < currentIndex;
 
-              // YT-lyrics style: spoken = medium grey, active = near-black bold (slightly bigger),
-              // upcoming = light grey. Clean contrast — no backgrounds, no glow.
               let style = {};
-              let className = 'transition-all duration-150';
-
               if (isActive) {
                 style = { color: '#111827', fontWeight: 700, fontSize: '1.06em' };
               } else if (isSpoken) {
-                style = { color: '#6B7280' }; // gray-500 — clearly read
+                style = { color: '#6B7280' };
               } else {
-                style = { color: '#C4C9D4' }; // light grey — clearly upcoming
+                style = { color: '#C4C9D4' };
               }
 
               return (
                 <span
                   key={i}
                   ref={isActive ? activeWordRef : null}
-                  className={className}
-                  style={{ ...style, marginRight: '7px', display: 'inline' }}
+                  style={{
+                    ...style,
+                    display: 'inline-block',   // treat each word as atomic — never breaks mid-char
+                    whiteSpace: 'nowrap',       // "Constitution" never splits to "Constitu-\ntion"
+                    marginRight: '7px',
+                    transition: 'color 0.15s, font-weight 0.15s',
+                  }}
                 >
                   {word}
                 </span>
@@ -95,26 +116,6 @@ export default function KaraokeReader({ passage, onComplete }) {
           </p>
         </div>
       </div>
-
-      {/* Start button */}
-      {!started && mounted && (
-        <div className="mt-6 text-center">
-          {isSupported() ? (
-            <>
-              <Button onClick={() => { setStarted(true); start(); }} size="lg">
-                🎤 Start reading aloud
-              </Button>
-              <p className="text-xs text-gray-400 mt-2">
-                Chrome will ask for mic permission
-              </p>
-            </>
-          ) : (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
-              <strong>Open in Chrome</strong> — Web Speech API only works in Chrome.
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Idle overlay */}
       <AnimatePresence>
