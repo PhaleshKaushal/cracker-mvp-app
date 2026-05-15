@@ -24,8 +24,35 @@ const LOOKAHEAD     = 3;   // look this many words ahead for a match
 const MAX_JUMP      = 4;   // max words to advance per utterance
 const MIN_WORD_LEN  = 4;   // ignore words shorter than this (stop words / noise)
 
+// Number word ↔ digit bridge — Chrome often transcribes "Three" as "3"
+// and passage text may have written-out numbers or digits
+const WORD_TO_NUM = {
+  zero:'0', one:'1', two:'2', three:'3', four:'4', five:'5',
+  six:'6', seven:'7', eight:'8', nine:'9', ten:'10',
+  eleven:'11', twelve:'12', thirteen:'13', fourteen:'14', fifteen:'15',
+  sixteen:'16', seventeen:'17', eighteen:'18', nineteen:'19', twenty:'20',
+  'twenty-one':'21', 'twenty-two':'22', 'twenty-three':'23', 'twenty-four':'24',
+  'twenty-five':'25', thirty:'30', 'thirty-one':'31', 'thirty-two':'32',
+  'thirty-three':'33', 'thirty-four':'34', 'thirty-five':'35', forty:'40',
+  fifty:'50', sixty:'60', seventy:'70', eighty:'80', ninety:'90',
+  hundred:'100', thousand:'1000',
+};
+const NUM_TO_WORD = Object.fromEntries(
+  Object.entries(WORD_TO_NUM).map(([w, d]) => [d, w])
+);
+
 function normalise(w) {
   return w.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+}
+
+/** True if spoken word matches target word, allowing number word ↔ digit swap */
+function wordMatches(spoken, target) {
+  if (spoken === target) return true;
+  // spoken = "3", target = "three"
+  if (NUM_TO_WORD[spoken] === target) return true;
+  // spoken = "three", target = "3"
+  if (WORD_TO_NUM[spoken] === target) return true;
+  return false;
 }
 
 export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
@@ -62,11 +89,14 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   const handleTranscript = useCallback((transcript, isFinal) => {
     const total = wordsRef.current.length;
 
-    // Only use content words — filter out short words that cause false matches
+    // Only use content words — filter out short words that cause false matches.
+    // Exception: keep pure digits (e.g. "3", "12", "35") since Chrome often
+    // transcribes written-out numbers like "Three" as the digit "3".
+    const isNumber = (w) => /^\d+$/.test(w);
     const spoken = transcript
       .split(/\s+/)
       .map(normalise)
-      .filter(w => w.length >= MIN_WORD_LEN);
+      .filter(w => w.length >= MIN_WORD_LEN || isNumber(w));
 
     if (spoken.length === 0) return;
 
@@ -81,9 +111,9 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
 
       for (let i = pos; i < end; i++) {
         const target = normalise(wordsRef.current[i]);
-        // Also skip short passage words in the lookahead window
-        if (target.length < MIN_WORD_LEN) continue;
-        if (target === word) {
+        // Skip short passage words in lookahead — but keep digits (e.g. "12", "35")
+        if (target.length < MIN_WORD_LEN && !isNumber(target)) continue;
+        if (wordMatches(word, target)) {
           const newPos = i + 1;
           if (newPos > furthest) {
             furthest = newPos;
