@@ -20,8 +20,8 @@ import { KARAOKE_WINDOW_MS, IDLE_TIMEOUT_MS } from '../lib/constants';
  * Rolling window (1.2s) only handles genuinely unrecognised words (e.g. Kesavananda).
  */
 
-const LOOKAHEAD  = 6;   // words ahead to search within for a match
-const MAX_JUMP   = 5;   // cap per utterance to prevent runaway jumps
+const LOOKAHEAD  = 3;   // tight window — prevents far-ahead matches from Chrome hallucinations
+const MAX_JUMP   = 4;   // cap per utterance
 const TICK_MS    = 300; // rolling window check interval
 
 function normalise(w) {
@@ -71,8 +71,9 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
     const total      = wordsRef.current.length;
     const startPos   = sessionStartRef.current;
 
-    // Walk through spoken words, matching them in sequence from sessionStart
-    let pos          = startPos;
+    // Start from whichever is further — sessionStart or currentIndex
+    // (rolling window may have moved us past sessionStart already)
+    let pos          = Math.max(startPos, currentIndexRef.current);
     let furthest     = currentIndexRef.current;
     let jumped       = 0;
 
