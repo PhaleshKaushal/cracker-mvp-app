@@ -36,6 +36,7 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
 
   const currentIndexRef   = useRef(0);
   const lastAdvanceRef    = useRef(Date.now());
+  const lastSpeechRef     = useRef(0);   // timestamp of last actual transcript from Chrome
   const sessionStartRef   = useRef(0);   // passage index when current utterance started
   const windowTimerRef    = useRef(null);
   const idleTimerRef      = useRef(null);
@@ -67,6 +68,7 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
 
   // ── Transcript handler ─────────────────────────────────────
   const handleTranscript = useCallback((transcript, isFinal) => {
+    lastSpeechRef.current = Date.now(); // Chrome heard something — user is speaking
     const spoken     = transcript.split(/\s+/).map(normalise).filter(Boolean);
     const total      = wordsRef.current.length;
     const startPos   = sessionStartRef.current;
@@ -110,23 +112,27 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
     clearInterval(windowTimerRef.current);
     clearInterval(idleTimerRef.current);
 
-    // Rolling window: if stuck on same word for KARAOKE_WINDOW_MS → nudge 1 word
-    // This only fires for truly unrecognisable words — speech recognition handles the rest
+    // Rolling window: only fires when the user IS actively speaking (Chrome heard
+    // something in the last 4s) but the current word is stuck (unrecognised term).
+    // If user looks away → no speech → lastSpeechRef goes stale → timer does nothing.
     windowTimerRef.current = setInterval(() => {
       if (!runningRef.current) return;
-      const stuck = Date.now() - lastAdvanceRef.current;
-      if (stuck >= KARAOKE_WINDOW_MS) {
+      const now          = Date.now();
+      const stuck        = now - lastAdvanceRef.current;
+      const silenceMs    = now - lastSpeechRef.current;
+      const userSpeaking = lastSpeechRef.current > 0 && silenceMs < 4000;
+
+      if (stuck >= KARAOKE_WINDOW_MS && userSpeaking) {
         advanceBy(1);
-        // Also move session start forward so next utterance matches correctly
         sessionStartRef.current = currentIndexRef.current;
       }
     }, TICK_MS);
 
-    // Idle: no progress for 30s → motivational screen
+    // Idle: no speech at all for 30s → motivational screen
     idleTimerRef.current = setInterval(() => {
-      if (!runningRef.current) return;
-      const stuck = Date.now() - lastAdvanceRef.current;
-      if (stuck >= IDLE_TIMEOUT_MS) onIdle?.();
+      if (!runningRef.current || lastSpeechRef.current === 0) return;
+      const silenceMs = Date.now() - lastSpeechRef.current;
+      if (silenceMs >= IDLE_TIMEOUT_MS) onIdle?.();
     }, 5000);
   }
 
@@ -138,6 +144,7 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   function start() {
     runningRef.current      = true;
     lastAdvanceRef.current  = Date.now();
+    lastSpeechRef.current   = 0;
     sessionStartRef.current = 0;
     currentIndexRef.current = 0;
     completedRef.current    = false;
@@ -157,6 +164,7 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   function resume() {
     runningRef.current      = true;
     lastAdvanceRef.current  = Date.now();
+    lastSpeechRef.current   = 0;
     sessionStartRef.current = currentIndexRef.current;
     startMic();
     startTimers();
