@@ -14,8 +14,12 @@ const MIC_STATE_LABEL = {
 export default function KaraokeReader({ passage, onComplete }) {
   const [showIdle, setShowIdle]   = useState(false);
   const [started, setStarted]     = useState(false);
+  const [mounted, setMounted]     = useState(false);
   const containerRef              = useRef(null);
   const activeWordRef             = useRef(null);
+
+  // Only check speech support after hydration — window doesn't exist on server
+  useEffect(() => { setMounted(true); }, []);
 
   const { words, currentIndex, micState, isSupported, start, stop, resume } =
     useKaraokeEngine({
@@ -127,7 +131,7 @@ export default function KaraokeReader({ passage, onComplete }) {
       </div>
 
       {/* ── Start / not started ── */}
-      {!started && (
+      {!started && mounted && (
         <div className="mt-6 text-center">
           {isSupported() ? (
             <>
