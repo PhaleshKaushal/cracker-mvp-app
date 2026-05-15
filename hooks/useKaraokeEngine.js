@@ -3,55 +3,47 @@ import useSpeechRecognition from './useSpeechRecognition';
 import { KARAOKE_WINDOW_MS, IDLE_TIMEOUT_MS } from '../lib/constants';
 
 /**
- * Karaoke engine — drives word-by-word highlighting.
+ * Karaoke engine — simplified, bulletproof approach:
  *
- * Logic:
- * - Splits passage into words, tracks current word index
- * - Chrome Web Speech API sends CUMULATIVE interim results per utterance:
- *     "Fundamental" → "Fundamental Rights" → "Fundamental Rights are guaranteed"
- *   We track the last transcript and only process the NEW suffix each time,
- *   so every word is handled exactly once no matter how fast the speaker is.
- * - After a final result, Chrome starts fresh → full new transcript processed.
- * - Proximity: match only within next LOOKAHEAD words of current position.
- * - Rolling 5-second window: if user is speaking but current word is stuck → auto-advance.
- * - 30-second idle (no transcript) → onIdle().
+ * 1. Speech recognition matches words in the next LOOKAHEAD positions → fast advance
+ * 2. Rolling window: if stuck on same word for 5s → auto-advance 1 word
+ *    (handles UPSC terms, cycling mic, anything Chrome can't recognise)
+ * 3. Idle: if stuck on same word for 30s → onIdle() fires
+ *
+ * The rolling window is unconditional once reading starts — no dependency on
+ * whether a transcript was received. This makes the karaoke always progress.
  */
 
-const LOOKAHEAD      = 5;  // proximity window — only match within next 5 words
-const MAX_JUMP       = 3;  // max words to advance in a single transcript event (prevents wild jumps)
-const WINDOW_TICK    = 500; // rolling-window check interval (ms)
+const LOOKAHEAD   = 5;    // proximity window for speech matching
+const MAX_JUMP    = 3;    // max words per transcript event
+const WINDOW_TICK = 500;  // check interval (ms)
+
+function normalise(w) {
+  return w.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+}
 
 export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   const words = passage ? passage.split(/\s+/).filter(Boolean) : [];
 
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [micState, setMicState] = useState('idle');
+  const [micState,     setMicState]     = useState('idle');
 
-  const currentIndexRef      = useRef(0);
-  const lastTranscriptRef    = useRef(0);        // timestamp: last time ANY speech heard
-  const lastAdvanceRef       = useRef(Date.now()); // timestamp: last time index moved
-  const prevTranscriptRef    = useRef('');       // last transcript text we processed
-  const windowTimerRef       = useRef(null);
-  const idleTimerRef         = useRef(null);
-  const wordsRef             = useRef(words);
-  const completedRef         = useRef(false);
+  const currentIndexRef  = useRef(0);
+  const lastAdvanceRef   = useRef(Date.now());
+  const prevTranscriptRef = useRef('');
+  const windowTimerRef   = useRef(null);
+  const idleTimerRef     = useRef(null);
+  const wordsRef         = useRef(words);
+  const completedRef     = useRef(false);
+  const runningRef       = useRef(false); // true while reading is active
 
-  // Keep wordsRef in sync when passage changes
   useEffect(() => {
-    wordsRef.current = passage ? passage.split(/\s+/).filter(Boolean) : [];
+    wordsRef.current  = passage ? passage.split(/\s+/).filter(Boolean) : [];
     completedRef.current = false;
   }, [passage]);
 
-  // Normalise: strip punctuation, lowercase
-  function normalise(w) {
-    return w.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-  }
-
-  // Core advance function
   const advanceBy = useCallback((n = 1) => {
-    const now = Date.now();
-    lastAdvanceRef.current = now;
-
+    lastAdvanceRef.current = Date.now();
     setCurrentIndex(prev => {
       const next = Math.min(prev + n, wordsRef.current.length);
       currentIndexRef.current = next;
@@ -63,105 +55,81 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
     });
   }, [onComplete]);
 
-  // Called on every speech transcript (interim + final)
+  // ── Speech transcript handler ────────────────────────────────
   const handleTranscript = useCallback((transcript) => {
-    lastTranscriptRef.current = Date.now();
-
     const prev = prevTranscriptRef.current;
 
-    // Chrome sends cumulative interim results within one utterance.
-    // Only process the NEW words added since last time to avoid re-matching
-    // already-spoken words and to handle any speaking speed correctly.
-    let textToProcess;
-    if (transcript === prev) {
-      return; // exact duplicate — nothing new
-    } else if (prev && transcript.startsWith(prev)) {
-      textToProcess = transcript.slice(prev.length).trim(); // only the new suffix
-    } else {
-      textToProcess = transcript; // new utterance / final result — process fully
-    }
+    // Only process new words (Chrome sends cumulative interim results)
+    let text;
+    if (transcript === prev) return;
+    else if (prev && transcript.startsWith(prev)) text = transcript.slice(prev.length).trim();
+    else text = transcript;
     prevTranscriptRef.current = transcript;
 
-    if (!textToProcess) return;
+    if (!text) return;
 
-    const spokenWords = textToProcess.split(/\s+/).map(normalise).filter(Boolean);
-    const totalWords  = wordsRef.current.length;
-    const start       = currentIndexRef.current;
-    const end         = Math.min(start + LOOKAHEAD, totalWords);
+    const spokenWords = text.split(/\s+/).map(normalise).filter(Boolean);
+    let advanced = 0;
 
-    // Match each new spoken word against the next LOOKAHEAD passage words.
-    // Cap total advance per event at MAX_JUMP to prevent wild jumps from
-    // Chrome hallucinating words that appear further ahead in the passage.
-    let advancedThisEvent = 0;
     for (const spoken of spokenWords) {
-      if (!spoken || advancedThisEvent >= MAX_JUMP) break;
+      if (!spoken || advanced >= MAX_JUMP) break;
       const cur = currentIndexRef.current;
-      const win = Math.min(cur + LOOKAHEAD, totalWords);
-      for (let i = cur; i < win; i++) {
+      const end = Math.min(cur + LOOKAHEAD, wordsRef.current.length);
+      for (let i = cur; i < end; i++) {
         const target = normalise(wordsRef.current[i]);
         if (target && spoken === target) {
           const jump = i - cur + 1;
           advanceBy(jump);
-          advancedThisEvent += jump;
+          advanced += jump;
           break;
         }
       }
     }
   }, [advanceBy]);
 
-  // Rolling-window timer: fires every 500ms
-  // If the user is actively speaking but the current word is stuck → advance 1
-  function startWindowTimer() {
+  // ── Rolling window + idle timers ─────────────────────────────
+  function startTimers() {
     clearInterval(windowTimerRef.current);
+    clearInterval(idleTimerRef.current);
+
+    // Rolling window: advance 1 word if stuck for KARAOKE_WINDOW_MS
+    // Unconditional — once reading starts, always progress
     windowTimerRef.current = setInterval(() => {
-      const now                = Date.now();
-      const timeSinceTranscript = now - lastTranscriptRef.current;
-      const timeSinceAdvance    = now - lastAdvanceRef.current;
-
-      const userIsSpeaking  = lastTranscriptRef.current > 0 && timeSinceTranscript < KARAOKE_WINDOW_MS;
-      const wordIsStuck     = timeSinceAdvance >= KARAOKE_WINDOW_MS;
-
-      if (userIsSpeaking && wordIsStuck) {
+      if (!runningRef.current) return;
+      const stuck = Date.now() - lastAdvanceRef.current;
+      if (stuck >= KARAOKE_WINDOW_MS) {
         advanceBy(1);
       }
     }, WINDOW_TICK);
-  }
 
-  // Idle timer: fires every 5s — triggers onIdle if no speech for 30s
-  function startIdleTimer() {
-    clearInterval(idleTimerRef.current);
+    // Idle: stuck for IDLE_TIMEOUT_MS → show motivational screen
     idleTimerRef.current = setInterval(() => {
-      if (lastTranscriptRef.current === 0) return; // haven't started yet
-      const timeSinceTranscript = Date.now() - lastTranscriptRef.current;
-      if (timeSinceTranscript >= IDLE_TIMEOUT_MS) {
+      if (!runningRef.current) return;
+      const stuck = Date.now() - lastAdvanceRef.current;
+      if (stuck >= IDLE_TIMEOUT_MS) {
         onIdle?.();
       }
     }, 5000);
   }
 
   const { start: startMic, stop: stopMic, isSupported } = useSpeechRecognition({
-    onResult: handleTranscript,
-    onStateChange: (state) => {
-      setMicState(state);
-      // Every time the mic comes back online, treat it as the user actively reading.
-      // This ensures the rolling-window advances even if Chrome cycles without sending
-      // a transcript (common on Vercel cold-start or slow connections).
-      if (state === 'listening') {
-        lastTranscriptRef.current = Date.now();
-      }
-    },
+    onResult:      handleTranscript,
+    onStateChange: setMicState,
   });
 
   function start() {
-    lastTranscriptRef.current  = 0;
-    lastAdvanceRef.current     = Date.now();
-    prevTranscriptRef.current  = '';
+    runningRef.current      = true;
+    lastAdvanceRef.current  = Date.now();
+    prevTranscriptRef.current = '';
+    currentIndexRef.current = 0;
+    setCurrentIndex(0);
+    completedRef.current    = false;
     startMic();
-    startWindowTimer();
-    startIdleTimer();
+    startTimers();
   }
 
   function stop() {
+    runningRef.current = false;
     stopMic();
     clearInterval(windowTimerRef.current);
     clearInterval(idleTimerRef.current);
@@ -169,15 +137,13 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   }
 
   function resume() {
-    lastTranscriptRef.current  = Date.now();
-    lastAdvanceRef.current     = Date.now();
-    prevTranscriptRef.current  = '';
+    runningRef.current      = true;
+    lastAdvanceRef.current  = Date.now();
+    prevTranscriptRef.current = '';
     startMic();
-    startWindowTimer();
-    startIdleTimer();
+    startTimers();
   }
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       stopMic();
@@ -186,13 +152,5 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
     };
   }, [stopMic]);
 
-  return {
-    words,
-    currentIndex,
-    micState,
-    isSupported,
-    start,
-    stop,
-    resume,
-  };
+  return { words, currentIndex, micState, isSupported, start, stop, resume };
 }
