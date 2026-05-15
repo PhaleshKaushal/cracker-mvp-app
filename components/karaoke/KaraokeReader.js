@@ -46,16 +46,12 @@ export default function KaraokeReader({ passage, onComplete }) {
       {/* Mic pill */}
       {started && (
         <div className="flex items-center gap-2 mb-4">
-          <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full transition-colors ${
-            isListening ? 'bg-pink-50 text-pink-500' : 'bg-gray-100 text-gray-400'
-          }`}>
-            {isListening && (
-              <span className="relative flex h-1.5 w-1.5">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-pink-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-pink-500" />
-              </span>
-            )}
-            {isListening ? 'Listening' : micState === 'restarting' ? 'Reconnecting…' : 'Mic idle'}
+          <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-full bg-pink-50 text-pink-500">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className={`absolute inline-flex h-full w-full rounded-full bg-pink-400 opacity-75 ${isListening ? 'animate-ping' : ''}`} />
+              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-pink-500" />
+            </span>
+            {isListening ? 'Listening' : 'Mic active'}
           </span>
         </div>
       )}

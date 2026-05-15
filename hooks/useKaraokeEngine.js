@@ -140,8 +140,16 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   }
 
   const { start: startMic, stop: stopMic, isSupported } = useSpeechRecognition({
-    onResult:      handleTranscript,
-    onStateChange: setMicState,
+    onResult: handleTranscript,
+    onStateChange: (state) => {
+      setMicState(state);
+      // Every time the mic comes back online, treat it as the user actively reading.
+      // This ensures the rolling-window advances even if Chrome cycles without sending
+      // a transcript (common on Vercel cold-start or slow connections).
+      if (state === 'listening') {
+        lastTranscriptRef.current = Date.now();
+      }
+    },
   });
 
   function start() {
