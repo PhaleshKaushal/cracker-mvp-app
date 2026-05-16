@@ -21,10 +21,11 @@ import { IDLE_TIMEOUT_MS } from '../lib/constants';
  */
 
 const LOOKAHEAD     = 6;   // look this many words ahead for a match
-                           // 6 lets us skip up to 5 unrecognised UPSC terms in a row
-const MAX_JUMP      = 10;  // max words to advance per utterance (generous — noise
-                           // filtering via MIN_WORD_LEN prevents false runaway)
-const MIN_WORD_LEN  = 4;   // ignore words shorter than this (stop words / noise)
+const MAX_JUMP      = 6;   // max content-word advances per utterance
+const MIN_WORD_LEN  = 5;   // ignore words shorter than this
+                           // 4-letter words like "from","with","draw","have","that"
+                           // are too common — Chrome picks them up from ambient noise
+                           // and causes false advances. 5+ chars filters them cleanly.
 
 // Number word ↔ digit bridge — Chrome often transcribes "Three" as "3".
 // Keys are already normalised (lowercase, no hyphens) to match normalise() output.
