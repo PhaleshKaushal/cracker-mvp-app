@@ -5,24 +5,25 @@ import { IDLE_TIMEOUT_MS } from '../lib/constants';
 /**
  * Karaoke engine.
  *
- * Chrome sends CUMULATIVE interim results within each utterance:
- *   interim → "fundamental rights"
- *   interim → "fundamental rights are guaranteed"
- *   final   → "fundamental rights are guaranteed in Part Three"
+ * Deepgram sends discrete, non-cumulative transcripts — each result is
+ * its own phrase, not a growing string. So the engine is straightforward:
  *
- * We process only the DIFF (new words since last interim) on interims,
- * and the full transcript on final. This prevents re-scanning already-
- * matched words and eliminates cascade false advances.
+ *   1. On each result (interim or final), scan forward from current position.
+ *   2. Match spoken words against the passage using a small LOOKAHEAD window
+ *      — this naturally skips unrecognised UPSC proper nouns.
+ *   3. On final: reset sessionStart so the next utterance scans fresh.
+ *   4. Idle timer: 30s with no match → motivational overlay.
  *
- * MIN_WORD_LEN=4 keeps the noise filter tight enough while diff processing
- * means a single common word in a 1-word diff can only advance 1 position.
+ * Number word ↔ digit bridge handles "Three" / "3" interchangeably.
  */
 
 const LOOKAHEAD    = 4;  // words ahead to search — skips unrecognised UPSC terms
-const MAX_JUMP     = 5;  // max passage advances per transcript chunk
-const MIN_WORD_LEN = 4;  // filter noise; safe with diff processing
+const MAX_JUMP     = 5;  // max passage advances per result
+const MIN_WORD_LEN = 4;  // ignore short noise words ("a", "an", "the", "of", "in")
 
 // ── Number word ↔ digit bridge ───────────────────────────────
+// Deepgram may return "three" or "3" depending on context.
+// Keys are pre-normalised (no hyphens, lowercase) to match normalise().
 const WORD_TO_NUM = {
   zero:'0', one:'1', two:'2', three:'3', four:'4', five:'5',
   six:'6', seven:'7', eight:'8', nine:'9', ten:'10',
@@ -46,8 +47,8 @@ function normalise(w) {
 
 function wordMatches(spoken, target) {
   if (spoken === target) return true;
-  if (NUM_TO_WORD[spoken] === target) return true;
-  if (WORD_TO_NUM[spoken] === target) return true;
+  if (NUM_TO_WORD[spoken] === target) return true;  // "3" → "three"
+  if (WORD_TO_NUM[spoken] === target) return true;  // "three" → "3"
   return false;
 }
 
@@ -61,8 +62,7 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
 
   const currentIndexRef = useRef(0);
   const lastMatchRef    = useRef(0);
-  const sessionStartRef = useRef(0);
-  const lastInterimRef  = useRef('');
+  const sessionStartRef = useRef(0);  // never scan before this position
   const idleTimerRef    = useRef(null);
   const wordsRef        = useRef(words);
   const completedRef    = useRef(false);
@@ -87,33 +87,16 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   // ── Transcript handler ──────────────────────────────────────
   const handleTranscript = useCallback((transcript, isFinal) => {
     const total = wordsRef.current.length;
-    let toProcess;
 
-    if (isFinal) {
-      toProcess = transcript;
-      lastInterimRef.current = '';
-    } else {
-      const prev = lastInterimRef.current;
-      toProcess = transcript.startsWith(prev)
-        ? transcript.slice(prev.length).trim()
-        : transcript;
-      lastInterimRef.current = transcript;
-    }
-
-    // ── DEBUG — open F12 console to see this ──
-    console.log(`[🎤 ${isFinal?'FINAL':'interim'}] raw="${transcript}" | toProcess="${toProcess}" | idx=${currentIndexRef.current}`);
-
-    if (!toProcess) return;
-
-    const spoken = toProcess
+    // Filter to content words only. Digits are kept (e.g. "12", "35").
+    const spoken = transcript
       .split(/\s+/)
       .map(normalise)
       .filter(w => w.length >= MIN_WORD_LEN || isNumber(w));
 
-    console.log(`[🎤 tokens]`, spoken, `| scanning from ${Math.max(sessionStartRef.current, currentIndexRef.current)}`);
-
     if (spoken.length === 0) return;
 
+    // Scan forward from current position — never go backward
     let pos      = Math.max(sessionStartRef.current, currentIndexRef.current);
     let furthest = currentIndexRef.current;
     let jumped   = 0;
@@ -132,7 +115,6 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
             jumped   = newPos - currentIndexRef.current;
           }
           pos = newPos;
-          console.log(`[🎤 match] "${word}" = passage[${i}]="${wordsRef.current[i]}" → advance to ${newPos}`);
           break;
         }
       }
@@ -143,6 +125,7 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
       advanceTo(furthest);
     }
 
+    // On final: reset scan window for the next utterance
     if (isFinal) {
       sessionStartRef.current = currentIndexRef.current;
     }
@@ -168,7 +151,6 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
     runningRef.current      = true;
     lastMatchRef.current    = 0;
     sessionStartRef.current = 0;
-    lastInterimRef.current  = '';
     currentIndexRef.current = 0;
     completedRef.current    = false;
     setCurrentIndex(0);
@@ -186,7 +168,6 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   function resume() {
     runningRef.current      = true;
     lastMatchRef.current    = 0;
-    lastInterimRef.current  = '';
     sessionStartRef.current = currentIndexRef.current;
     startMic();
     startIdleTimer();

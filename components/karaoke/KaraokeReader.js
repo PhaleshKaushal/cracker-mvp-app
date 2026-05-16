@@ -70,7 +70,7 @@ export default function KaraokeReader({ passage, onComplete }) {
               <span className={`absolute inline-flex h-full w-full rounded-full bg-pink-400 opacity-75 ${isListening ? 'animate-ping' : ''}`} />
               <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-pink-500" />
             </span>
-            {isListening ? 'Listening' : 'Mic active'}
+            {micState === 'connecting' ? 'Connecting…' : isListening ? 'Listening' : 'Mic active'}
           </span>
         </div>
       )}
