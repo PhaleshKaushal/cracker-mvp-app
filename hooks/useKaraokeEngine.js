@@ -5,34 +5,24 @@ import { IDLE_TIMEOUT_MS } from '../lib/constants';
 /**
  * Karaoke engine.
  *
- * Core design:
- *
- * Chrome's Web Speech API sends CUMULATIVE interim results within each
- * utterance:
+ * Chrome sends CUMULATIVE interim results within each utterance:
  *   interim → "fundamental rights"
  *   interim → "fundamental rights are guaranteed"
  *   final   → "fundamental rights are guaranteed in Part Three"
  *
- * The correct way to handle this is DIFF processing on interim: slice off
- * what was already seen last call, and only match the newly added words.
- * On final, process the whole transcript from the current position — Chrome's
- * final is its most confident read and catches anything interims missed.
+ * We process only the DIFF (new words since last interim) on interims,
+ * and the full transcript on final. This prevents re-scanning already-
+ * matched words and eliminates cascade false advances.
  *
- * This means:
- *  - No re-scanning already-matched words → no cascade false advances
- *  - MIN_WORD_LEN can be low (3) because each diff is only 1-3 new words
- *  - LOOKAHEAD handles unrecognised UPSC proper nouns naturally
- *  - sessionStartRef acts as a safety floor (never go backward)
+ * MIN_WORD_LEN=4 keeps the noise filter tight enough while diff processing
+ * means a single common word in a 1-word diff can only advance 1 position.
  */
 
-const LOOKAHEAD    = 4;  // words to look ahead — skips unrecognised UPSC terms
+const LOOKAHEAD    = 4;  // words ahead to search — skips unrecognised UPSC terms
 const MAX_JUMP     = 5;  // max passage advances per transcript chunk
-const MIN_WORD_LEN = 3;  // filter 1-2 char noise only; common words are safe
-                         // because diff processing prevents cascade false-matches
+const MIN_WORD_LEN = 4;  // filter noise; safe with diff processing
 
 // ── Number word ↔ digit bridge ───────────────────────────────
-// Chrome often transcribes "Three" as "3". Keys are pre-normalised
-// (no hyphens, lowercase) to match normalise() output directly.
 const WORD_TO_NUM = {
   zero:'0', one:'1', two:'2', three:'3', four:'4', five:'5',
   six:'6', seven:'7', eight:'8', nine:'9', ten:'10',
@@ -56,8 +46,8 @@ function normalise(w) {
 
 function wordMatches(spoken, target) {
   if (spoken === target) return true;
-  if (NUM_TO_WORD[spoken] === target) return true;  // "3" → "three"
-  if (WORD_TO_NUM[spoken] === target) return true;  // "three" → "3"
+  if (NUM_TO_WORD[spoken] === target) return true;
+  if (WORD_TO_NUM[spoken] === target) return true;
   return false;
 }
 
@@ -71,8 +61,8 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
 
   const currentIndexRef = useRef(0);
   const lastMatchRef    = useRef(0);
-  const sessionStartRef = useRef(0);   // safety floor — never scan before this
-  const lastInterimRef  = useRef('');  // last interim transcript seen this utterance
+  const sessionStartRef = useRef(0);
+  const lastInterimRef  = useRef('');
   const idleTimerRef    = useRef(null);
   const wordsRef        = useRef(words);
   const completedRef    = useRef(false);
@@ -97,24 +87,21 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   // ── Transcript handler ──────────────────────────────────────
   const handleTranscript = useCallback((transcript, isFinal) => {
     const total = wordsRef.current.length;
-
     let toProcess;
 
     if (isFinal) {
-      // Final: process the whole utterance transcript from current position.
-      // Chrome's final is its most accurate reading — catches anything interims missed.
       toProcess = transcript;
       lastInterimRef.current = '';
     } else {
-      // Interim: Chrome sends cumulative strings within an utterance.
-      // Only process the NEW words added since we last looked — this is the
-      // key insight that prevents re-matching already-processed words.
       const prev = lastInterimRef.current;
       toProcess = transcript.startsWith(prev)
         ? transcript.slice(prev.length).trim()
-        : transcript;  // Chrome revised earlier words — process full from current pos
+        : transcript;
       lastInterimRef.current = transcript;
     }
+
+    // ── DEBUG — open F12 console to see this ──
+    console.log(`[🎤 ${isFinal?'FINAL':'interim'}] raw="${transcript}" | toProcess="${toProcess}" | idx=${currentIndexRef.current}`);
 
     if (!toProcess) return;
 
@@ -123,9 +110,10 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
       .map(normalise)
       .filter(w => w.length >= MIN_WORD_LEN || isNumber(w));
 
+    console.log(`[🎤 tokens]`, spoken, `| scanning from ${Math.max(sessionStartRef.current, currentIndexRef.current)}`);
+
     if (spoken.length === 0) return;
 
-    // Start from the safety floor — never scan before sessionStart or currentIndex
     let pos      = Math.max(sessionStartRef.current, currentIndexRef.current);
     let furthest = currentIndexRef.current;
     let jumped   = 0;
@@ -144,6 +132,7 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
             jumped   = newPos - currentIndexRef.current;
           }
           pos = newPos;
+          console.log(`[🎤 match] "${word}" = passage[${i}]="${wordsRef.current[i]}" → advance to ${newPos}`);
           break;
         }
       }
