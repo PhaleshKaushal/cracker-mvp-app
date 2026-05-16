@@ -3,32 +3,36 @@ import useSpeechRecognition from './useSpeechRecognition';
 import { IDLE_TIMEOUT_MS } from '../lib/constants';
 
 /**
- * Karaoke engine — clean, no hacks.
+ * Karaoke engine.
  *
- * Matching rules:
- * 1. Only match content words (4+ characters) from transcript.
- *    Short words like "the", "of", "are", "in" are ignored — Chrome picks them
- *    up from background noise constantly and they cause false advances.
+ * Core design:
  *
- * 2. LOOKAHEAD of 3: when matching a spoken word, look up to 3 positions ahead
- *    of current. This naturally skips 1-2 unrecognised UPSC terms — user says
- *    "case" and it finds it at pos+2, auto-skipping "Kesavananda Bharati".
+ * Chrome's Web Speech API sends CUMULATIVE interim results within each
+ * utterance:
+ *   interim → "fundamental rights"
+ *   interim → "fundamental rights are guaranteed"
+ *   final   → "fundamental rights are guaranteed in Part Three"
  *
- * 3. No rolling window — it always causes cascade issues. LOOKAHEAD is the
- *    right solution for unrecognised words.
+ * The correct way to handle this is DIFF processing on interim: slice off
+ * what was already seen last call, and only match the newly added words.
+ * On final, process the whole transcript from the current position — Chrome's
+ * final is its most confident read and catches anything interims missed.
  *
- * 4. Idle timer: 30s with no real word match → motivational screen.
+ * This means:
+ *  - No re-scanning already-matched words → no cascade false advances
+ *  - MIN_WORD_LEN can be low (3) because each diff is only 1-3 new words
+ *  - LOOKAHEAD handles unrecognised UPSC proper nouns naturally
+ *  - sessionStartRef acts as a safety floor (never go backward)
  */
 
-const LOOKAHEAD     = 6;   // look this many words ahead for a match
-const MAX_JUMP      = 6;   // max content-word advances per utterance
-const MIN_WORD_LEN  = 5;   // ignore words shorter than this
-                           // 4-letter words like "from","with","draw","have","that"
-                           // are too common — Chrome picks them up from ambient noise
-                           // and causes false advances. 5+ chars filters them cleanly.
+const LOOKAHEAD    = 4;  // words to look ahead — skips unrecognised UPSC terms
+const MAX_JUMP     = 5;  // max passage advances per transcript chunk
+const MIN_WORD_LEN = 3;  // filter 1-2 char noise only; common words are safe
+                         // because diff processing prevents cascade false-matches
 
-// Number word ↔ digit bridge — Chrome often transcribes "Three" as "3".
-// Keys are already normalised (lowercase, no hyphens) to match normalise() output.
+// ── Number word ↔ digit bridge ───────────────────────────────
+// Chrome often transcribes "Three" as "3". Keys are pre-normalised
+// (no hyphens, lowercase) to match normalise() output directly.
 const WORD_TO_NUM = {
   zero:'0', one:'1', two:'2', three:'3', four:'4', five:'5',
   six:'6', seven:'7', eight:'8', nine:'9', ten:'10',
@@ -44,20 +48,20 @@ const NUM_TO_WORD = Object.fromEntries(
   Object.entries(WORD_TO_NUM).map(([w, d]) => [d, w])
 );
 
-// True if w is a pure integer string like "3", "12", "35"
 const isNumber = (w) => /^\d+$/.test(w);
 
 function normalise(w) {
   return w.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
 }
 
-/** True if spoken word matches target word, allowing number word ↔ digit swap */
 function wordMatches(spoken, target) {
   if (spoken === target) return true;
   if (NUM_TO_WORD[spoken] === target) return true;  // "3" → "three"
   if (WORD_TO_NUM[spoken] === target) return true;  // "three" → "3"
   return false;
 }
+
+// ─────────────────────────────────────────────────────────────
 
 export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   const words = passage ? passage.split(/\s+/).filter(Boolean) : [];
@@ -66,8 +70,9 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   const [micState,     setMicState]     = useState('idle');
 
   const currentIndexRef = useRef(0);
-  const lastMatchRef    = useRef(0);     // timestamp of last real word match
-  const sessionStartRef = useRef(0);    // passage position when current utterance began
+  const lastMatchRef    = useRef(0);
+  const sessionStartRef = useRef(0);   // safety floor — never scan before this
+  const lastInterimRef  = useRef('');  // last interim transcript seen this utterance
   const idleTimerRef    = useRef(null);
   const wordsRef        = useRef(words);
   const completedRef    = useRef(false);
@@ -93,18 +98,35 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   const handleTranscript = useCallback((transcript, isFinal) => {
     const total = wordsRef.current.length;
 
-    // Only use content words — filter short stop words that cause false matches.
-    // Exception: keep pure digit tokens ("3","12","35") — Chrome often transcribes
-    // written-out numbers like "Three" as the digit "3".
-    const spoken = transcript
+    let toProcess;
+
+    if (isFinal) {
+      // Final: process the whole utterance transcript from current position.
+      // Chrome's final is its most accurate reading — catches anything interims missed.
+      toProcess = transcript;
+      lastInterimRef.current = '';
+    } else {
+      // Interim: Chrome sends cumulative strings within an utterance.
+      // Only process the NEW words added since we last looked — this is the
+      // key insight that prevents re-matching already-processed words.
+      const prev = lastInterimRef.current;
+      toProcess = transcript.startsWith(prev)
+        ? transcript.slice(prev.length).trim()
+        : transcript;  // Chrome revised earlier words — process full from current pos
+      lastInterimRef.current = transcript;
+    }
+
+    if (!toProcess) return;
+
+    const spoken = toProcess
       .split(/\s+/)
       .map(normalise)
       .filter(w => w.length >= MIN_WORD_LEN || isNumber(w));
 
     if (spoken.length === 0) return;
 
-    // Start from max(sessionStart, currentIndex) — never go backwards
-    let pos     = Math.max(sessionStartRef.current, currentIndexRef.current);
+    // Start from the safety floor — never scan before sessionStart or currentIndex
+    let pos      = Math.max(sessionStartRef.current, currentIndexRef.current);
     let furthest = currentIndexRef.current;
     let jumped   = 0;
 
@@ -114,8 +136,7 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
 
       for (let i = pos; i < end; i++) {
         const target = normalise(wordsRef.current[i]);
-        // Skip short passage words in lookahead — but keep digits (e.g. "12", "35")
-        if (target.length < MIN_WORD_LEN && !isNumber(target)) continue;
+        if (!target || (target.length < MIN_WORD_LEN && !isNumber(target))) continue;
         if (wordMatches(word, target)) {
           const newPos = i + 1;
           if (newPos > furthest) {
@@ -138,7 +159,7 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
     }
   }, [advanceTo]);
 
-  // ── Idle timer only ─────────────────────────────────────────
+  // ── Idle timer ───────────────────────────────────────────────
   function startIdleTimer() {
     clearInterval(idleTimerRef.current);
     idleTimerRef.current = setInterval(() => {
@@ -158,6 +179,7 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
     runningRef.current      = true;
     lastMatchRef.current    = 0;
     sessionStartRef.current = 0;
+    lastInterimRef.current  = '';
     currentIndexRef.current = 0;
     completedRef.current    = false;
     setCurrentIndex(0);
@@ -175,6 +197,7 @@ export default function useKaraokeEngine({ passage, onComplete, onIdle }) {
   function resume() {
     runningRef.current      = true;
     lastMatchRef.current    = 0;
+    lastInterimRef.current  = '';
     sessionStartRef.current = currentIndexRef.current;
     startMic();
     startIdleTimer();
